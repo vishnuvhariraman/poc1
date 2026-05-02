@@ -54,7 +54,7 @@ def screen_entity(payload: ScreeningRequest, background_tasks: BackgroundTasks, 
 
     decision = Decision.POTENTIAL_HIT if matches else Decision.NO_HIT
 
-    safe_payload = payload.model_dump()
+    safe_payload = payload.model_dump(mode="json")
     for i in safe_payload.get("identifiers", []):
         i["value"] = "REDACTED"
 

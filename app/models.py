@@ -102,10 +102,47 @@ class ScreeningMatchORM(Base):
     reason_codes: Mapped[dict] = mapped_column(JSON)
 
 
+
+
+class CaseActionType(str, enum.Enum):
+    CLOSE_FALSE_POSITIVE = "CLOSE_FALSE_POSITIVE"
+    ESCALATE_LEVEL_2 = "ESCALATE_LEVEL_2"
+
+
 class CaseORM(Base):
     __tablename__ = "cases"
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     screening_request_id: Mapped[int] = mapped_column(ForeignKey("screening_requests.id"), index=True)
     status: Mapped[str] = mapped_column(String(30), default="OPEN")
+    current_level: Mapped[int] = mapped_column(Integer, default=1)
     reason: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CaseActionORM(Base):
+    __tablename__ = "case_actions"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    case_id: Mapped[int] = mapped_column(ForeignKey("cases.id"), index=True)
+    action: Mapped[str] = mapped_column(String(50))
+    actor: Mapped[str] = mapped_column(String(100))
+    comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
+
+
+class CaseQueueItem(BaseModel):
+    case_id: int
+    request_id: str
+    status: str
+    current_level: int
+    created_at: datetime
+    match_count: int
+    highest_score: float
+    entity_type: str
+    screened_name: str
+    lists_matched: list[str]
+
+
+class CaseActionRequest(BaseModel):
+    action: CaseActionType
+    comment: Optional[str] = None
+    actor: str = "demo-user"

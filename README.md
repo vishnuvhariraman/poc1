@@ -1,52 +1,46 @@
-# FastAPI Sanctions Screening POC
+# FastAPI Sanctions Screening POC + Case Review UI
 
-## Start services
+## Start full stack
 ```bash
 docker compose up --build -d
 ```
 
-## Load sample sanctions data into OpenSearch
+## Load sample sanctions data (always loads 10)
 ```bash
-docker compose exec screening-api python scripts/load_sample_sanctions.py
+docker compose exec screening-api sh -c "PYTHONPATH=/app python scripts/load_sample_sanctions.py"
 ```
 
-## Call screening API (POTENTIAL_HIT)
+## Verify OpenSearch count
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/screenings \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "request_id": "req-001",
-  "source_system": "crm",
-  "entity_type": "PERSON",
-  "name": {"full_name": "John Adam Doe", "first_name": "John", "last_name": "Doe"},
-  "dob": "1980-01-15",
-  "identifiers": [{"type": "SSN", "value": "SYNTH-SSN-0001"}],
-  "addresses": [{"line1": "1 Main St", "city": "Austin", "state": "TX", "postal_code": "73301", "country": "US"}],
-  "screening_lists": ["OFAC_SDN", "UN_CONSOLIDATED", "EU_CONSOLIDATED"]
-}'
+curl.exe http://localhost:9200/sanctions-master-v1/_count
+```
+Expected: `count = 10`.
+
+## Create PERSON multi-hit case (Raj Kumar Dev)
+```bash
+curl -s -X POST http://localhost:8000/api/v1/screenings -H 'Content-Type: application/json' -d '{"request_id":"req-multi-person","source_system":"crm","entity_type":"PERSON","name":{"full_name":"Raj Kumar Dev"},"dob":"1978-04-12","identifiers":[],"addresses":[],"screening_lists":["OFAC_SDN","UN_CONSOLIDATED","EU_CONSOLIDATED"]}'
 ```
 
-## Call screening API (NO_HIT)
+## Create ORGANIZATION multi-hit case (Global Falcon Trading LLC)
 ```bash
-curl -s -X POST http://localhost:8000/api/v1/screenings \
-  -H 'Content-Type: application/json' \
-  -d '{
-  "request_id": "req-002",
-  "source_system": "crm",
-  "entity_type": "ORGANIZATION",
-  "name": {"full_name": "Sunrise Bakery Inc"},
-  "identifiers": [{"type": "TAX_ID", "value": "SYNTH-TAX-9999"}],
-  "addresses": [{"line1": "22 Lake St", "city": "Denver", "state": "CO", "postal_code": "80014", "country": "US"}],
-  "screening_lists": ["OFAC_SDN", "UN_CONSOLIDATED", "EU_CONSOLIDATED"]
-}'
+curl -s -X POST http://localhost:8000/api/v1/screenings -H 'Content-Type: application/json' -d '{"request_id":"req-multi-org","source_system":"crm","entity_type":"ORGANIZATION","name":{"full_name":"Global Falcon Trading LLC"},"identifiers":[],"addresses":[],"screening_lists":["OFAC_SDN","UN_CONSOLIDATED","EU_CONSOLIDATED"]}'
 ```
 
-## View cases in PostgreSQL
-```bash
-docker compose exec postgres psql -U screening -d screening_db -c "select * from cases order by id desc;"
-```
+## Open UI
+- http://localhost:5173
+
+## Review multi-hit case
+1. Open Case Queue.
+2. Click **View Details** on a case with `3 Matches` badge.
+3. Compare screened entity vs all matched sanctions cards.
+
+## Close as false positive
+- In case detail, use **Close as False Positive** with optional comment and actor.
+
+## Escalate to Level 2
+- In case detail, use **Escalate to Level 2**.
 
 ## Run tests
 ```bash
-pytest -q
+PYTHONPATH=. pytest -q
 ```

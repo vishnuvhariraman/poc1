@@ -2,6 +2,9 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 
+from app.database import SessionLocal
+from app.models import ScreeningRequestORM
+
 client = TestClient(app)
 
 
@@ -48,3 +51,29 @@ def test_potential_hit(monkeypatch):
     body = res.json()
     assert body['decision'] == 'POTENTIAL_HIT'
     assert len(body['matches']) >= 1
+
+
+def test_dob_payload_is_json_serializable_and_redacted(monkeypatch):
+    monkeypatch.setattr('app.main.search_candidates', lambda *args, **kwargs: [])
+    request_id = 't-dob-json'
+    payload = {
+        'request_id': request_id,
+        'source_system': 'test',
+        'entity_type': 'PERSON',
+        'name': {'full_name': 'Jane Doe'},
+        'dob': '1980-01-15',
+        'identifiers': [{'type': 'SSN', 'value': '123-45-6789'}],
+        'addresses': [],
+        'screening_lists': ['OFAC_SDN']
+    }
+
+    res = client.post('/api/v1/screenings', json=payload)
+    assert res.status_code == 200
+
+    db = SessionLocal()
+    try:
+        row = db.query(ScreeningRequestORM).filter(ScreeningRequestORM.request_id == request_id).one()
+        assert row.payload['dob'] == '1980-01-15'
+        assert row.payload['identifiers'][0]['value'] == 'REDACTED'
+    finally:
+        db.close()

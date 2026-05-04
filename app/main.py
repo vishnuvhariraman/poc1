@@ -1,19 +1,38 @@
 import time
-from datetime import date
 
-from fastapi import BackgroundTasks, Depends, FastAPI
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
 from app.case_service import create_case_async
 from app.config import settings
 from app.database import engine, get_db
-from app.models import Base, Decision, MatchModel, ScreeningMatchORM, ScreeningRequest, ScreeningRequestORM, ScreeningResponse
+from app.models import (
+    Base,
+    CaseActionORM,
+    CaseActionRequest,
+    CaseQueueItem,
+    CaseORM,
+    Decision,
+    MatchModel,
+    ScreeningMatchORM,
+    ScreeningRequest,
+    ScreeningRequestORM,
+    ScreeningResponse,
+)
 from app.normalizer import normalize_text
 from app.opensearch_client import search_candidates
 from app.scorer import score_match
 from app.security import hmac_identifier
 
 app = FastAPI(title=settings.app_name)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 Base.metadata.create_all(bind=engine)
 
 
@@ -98,3 +117,93 @@ def screen_entity(payload: ScreeningRequest, background_tasks: BackgroundTasks, 
         case_id=case_id,
         matches=matches,
     )
+
+
+@app.get("/api/v1/cases", response_model=list[CaseQueueItem])
+def list_cases(db: Session = Depends(get_db)):
+    cases = db.query(CaseORM).order_by(CaseORM.created_at.desc()).all()
+    items = []
+    for case in cases:
+        req = db.query(ScreeningRequestORM).filter(ScreeningRequestORM.id == case.screening_request_id).first()
+        matches = db.query(ScreeningMatchORM).filter(ScreeningMatchORM.screening_request_id == case.screening_request_id).all()
+        items.append(
+            CaseQueueItem(
+                case_id=case.id,
+                request_id=req.request_id if req else "",
+                status=case.status,
+                current_level=case.current_level,
+                created_at=case.created_at,
+                match_count=len(matches),
+                highest_score=max([m.score for m in matches] or [0]),
+                entity_type=req.entity_type if req else "",
+                screened_name=(req.payload.get("name", {}).get("full_name", "") if req and req.payload else ""),
+                lists_matched=sorted(list({m.list_source for m in matches})),
+            )
+        )
+    return items
+
+
+@app.get("/api/v1/cases/{case_id}")
+def case_detail(case_id: int, db: Session = Depends(get_db)):
+    case = db.query(CaseORM).filter(CaseORM.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+    req = db.query(ScreeningRequestORM).filter(ScreeningRequestORM.id == case.screening_request_id).first()
+    matches = db.query(ScreeningMatchORM).filter(ScreeningMatchORM.screening_request_id == case.screening_request_id).all()
+    actions = db.query(CaseActionORM).filter(CaseActionORM.case_id == case_id).order_by(CaseActionORM.created_at.desc()).all()
+
+    return {
+        "case": {
+            "case_id": case.id,
+            "status": case.status,
+            "current_level": case.current_level,
+            "created_at": case.created_at,
+            "reason": case.reason,
+            "match_count": len(matches),
+            "highest_score": max([m.score for m in matches] or [0]),
+        },
+        "screening_request": {
+            "request_id": req.request_id if req else None,
+            "source_system": req.source_system if req else None,
+            "entity_type": req.entity_type if req else None,
+            "payload": req.payload if req else None,
+        },
+        "matches": [
+            {
+                "score": m.score,
+                "matched_fields": m.matched_fields,
+                "reason_codes": m.reason_codes,
+                "list_source": m.list_source,
+                "source_record_id": m.source_record_id,
+                "matched_name": m.matched_name,
+            }
+            for m in matches
+        ],
+        "actions": [
+            {
+                "action": a.action,
+                "actor": a.actor,
+                "comment": a.comment,
+                "created_at": a.created_at,
+            }
+            for a in actions
+        ],
+    }
+
+
+@app.post("/api/v1/cases/{case_id}/actions")
+def case_action(case_id: int, payload: CaseActionRequest, db: Session = Depends(get_db)):
+    case = db.query(CaseORM).filter(CaseORM.id == case_id).first()
+    if not case:
+        raise HTTPException(status_code=404, detail="Case not found")
+
+    if payload.action.value == "CLOSE_FALSE_POSITIVE":
+        case.status = "CLOSED_FALSE_POSITIVE"
+    elif payload.action.value == "ESCALATE_LEVEL_2":
+        case.status = "ESCALATED_LEVEL_2"
+        case.current_level = 2
+
+    db.add(CaseActionORM(case_id=case_id, action=payload.action.value, actor=payload.actor, comment=payload.comment))
+    db.commit()
+    db.refresh(case)
+    return {"case_id": case.id, "status": case.status, "current_level": case.current_level}
